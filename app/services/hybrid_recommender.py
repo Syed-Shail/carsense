@@ -1,59 +1,35 @@
-import re
 import json
 import faiss
+import joblib
 import numpy as np
+import pandas as pd
 from sentence_transformers import SentenceTransformer
 
 
-
-DATA_FILE = "/Users/shail/Desktop/Car Projecr/data/processed/enhanced_vehicles.json"
-INDEX_FILE = "/Users/shail/Desktop/Car Projecr/data/processed/car_index.faiss"
-
-model = SentenceTransformer("all-MiniLM-L6-v2")
+DATA_FILE = "data/processed/enhanced_vehicles.json"
+INDEX_FILE = "data/processed/car_index.faiss"
+MODEL_FILE = "data/processed/ranker.pkl"
 
 
-with open(DATA_FILE, "r", encoding="utf-8") as file:
-    cars = json.load(file)
-
-index = faiss.read_index(INDEX_FILE)
 print("Loading model...")
-model = SentenceTransformer("all-MiniLM-L6-v2")
-print("Model loaded")
+embedding_model = SentenceTransformer("all-MiniLM-L6-v2")
+print("Embedding model loaded")
 
-print("Loading cars...")
+
 with open(DATA_FILE, "r", encoding="utf-8") as file:
     cars = json.load(file)
-print("Cars loaded")
 
-print("Loading FAISS index...")
 index = faiss.read_index(INDEX_FILE)
-print("FAISS loaded")
 
-def parse_query(query):
-    constraints = {
-        "budget": None,
-        "seats": None,
-        "body_type": None
-    }
+saved = joblib.load(MODEL_FILE)
 
-    budget_match = re.search(r'under\s+(\d+)', query.lower())
-    if budget_match:
-        constraints["budget"] = int(budget_match.group(1)) * 100000
-
-    seats_match = re.search(r'(\d+)\s*seats?', query.lower())
-    if seats_match:
-        constraints["seats"] = int(seats_match.group(1))
-
-    body_types = ["suv", "sedan", "hatchback", "muv"]
-    for body in body_types:
-        if body in query.lower():
-            constraints["body_type"] = body.capitalize()
-
-    return constraints
+ranker = saved["model"]
+body_encoder = saved["body_encoder"]
+priority_encoder = saved["priority_encoder"]
 
 
 def semantic_candidates(query, top_k=50):
-    query_vector = model.encode([query])
+    query_vector = embedding_model.encode([query])
 
     distances, indices = index.search(
         np.array(query_vector),
@@ -63,7 +39,7 @@ def semantic_candidates(query, top_k=50):
     return [cars[i] for i in indices[0]]
 
 
-def apply_filters(candidates, constraints):
+def apply_filters(candidates, budget, seats, body_type):
     filtered = []
 
     for car in candidates:
@@ -72,13 +48,13 @@ def apply_filters(candidates, constraints):
             for variant in car["variants"]
         )
 
-        if constraints["budget"] and min_price > constraints["budget"]:
+        if min_price > budget:
             continue
 
-        if constraints["seats"] and car["seating_capacity"] < constraints["seats"]:
+        if car["seating_capacity"] < seats:
             continue
 
-        if constraints["body_type"] and car["body_type"].lower() != constraints["body_type"].lower():
+        if car["body_type"].lower() != body_type.lower():
             continue
 
         filtered.append(car)
@@ -86,64 +62,78 @@ def apply_filters(candidates, constraints):
     return filtered
 
 
-def rerank(cars_list, query):
-    scored = []
+def ml_rerank(filtered_cars, budget, seats, priority):
+    ranked = []
 
-    query_lower = query.lower()
+    for car in filtered_cars:
+        min_price = min(
+            variant["pricing"]["ex_showroom"]
+            for variant in car["variants"]
+        )
 
-    for car in cars_list:
-        score = 0
+        features = pd.DataFrame([{
+            "budget": budget,
+            "seats": seats,
+            "body_type": body_encoder.transform([car["body_type"]])[0],
+            "priority": priority_encoder.transform([priority])[0],
+            "car_price": min_price,
+            "family_score": car["ai"]["family_score"],
+            "performance_score": car["ai"]["performance_score"],
+            "city_score": car["ai"]["city_score"],
+            "luxury_score": car["ai"]["luxury_score"],
+            "offroad_score": car["ai"]["offroad_score"],
+            "safety_score": car["ai"]["safety_score"],
+            "efficiency_score": car["ai"]["efficiency_score"]
+        }])
 
-        if "rugged" in query_lower or "offroad" in query_lower:
-            score += car["ai"]["offroad_score"]
+        probability = ranker.predict_proba(features)[0][1]
 
-        if "family" in query_lower:
-            score += car["ai"]["family_score"]
-
-        if "performance" in query_lower or "sporty" in query_lower:
-            score += car["ai"]["performance_score"]
-
-        if "safe" in query_lower:
-            score += car["ai"]["safety_score"]
-
-        if "efficient" in query_lower or "mileage" in query_lower:
-            score += car["ai"]["efficiency_score"]
-
-        scored.append({
+        ranked.append({
             "brand": car["brand"],
             "model": car["model"],
-            "score": score,
-            "price": min(
-                variant["pricing"]["ex_showroom"]
-                for variant in car["variants"]
-            )
+            "score": probability,
+            "price": min_price
         })
 
-    scored.sort(key=lambda x: x["score"], reverse=True)
+    ranked.sort(
+        key=lambda x: x["score"],
+        reverse=True
+    )
 
-    return scored[:5]
+    return ranked[:5]
 
 
-def hybrid_recommend(query):
-    print("Parsing query...")
-    constraints = parse_query(query)
-
-    print("Getting semantic candidates...")
+def hybrid_recommend(query, budget, seats, body_type, priority):
+    print("Semantic retrieval...")
     candidates = semantic_candidates(query)
 
     print("Applying filters...")
-    filtered = apply_filters(candidates, constraints)
+    filtered = apply_filters(
+        candidates,
+        budget,
+        seats,
+        body_type
+    )
 
-    print("Reranking...")
-    ranked = rerank(filtered, query)
+    print("ML reranking...")
+    ranked = ml_rerank(
+        filtered,
+        budget,
+        seats,
+        priority
+    )
 
     return ranked
 
 
 if __name__ == "__main__":
-    query = "Need a rugged SUV less then 20 lakh with 7 seats"
-
-    results = hybrid_recommend(query)
+    results = hybrid_recommend(
+        query="Need a rugged family SUV for long trips",
+        budget=10000000,
+        seats=5,
+        body_type="SUV",
+        priority="luxury"
+    )
 
     for car in results:
         print(car)

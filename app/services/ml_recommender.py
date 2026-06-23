@@ -71,7 +71,7 @@ if __name__ == "__main__":
     recommendations = recommend_ml(
         budget=20000000,
         seats=5,
-        body_type="Sedan",
+        body_type="Suv",
         priority="performance"
     )
 

@@ -6,6 +6,8 @@ import csv
 INPUT_FILE = "data/processed/enhanced_vehicles.json"
 OUTPUT_FILE = "data/processed/training_data.csv"
 
+
+
 with open(INPUT_FILE, "r", encoding="utf-8") as file:
     cars = json.load(file)
 
@@ -24,7 +26,7 @@ priorities = [
 training_rows = []
 
 
-for _ in range(5000):
+for _ in range(10000):
     user_budget = random.randint(400000, 5000000)
     user_seats = random.choice([4, 5, 6, 7])
     user_priority = random.choice(priorities)
@@ -36,26 +38,68 @@ for _ in range(5000):
         for variant in car["variants"]
     )
 
-    feature_map = {
-        "family": car["ai"]["family_score"],
-        "performance": car["ai"]["performance_score"],
-        "city": car["ai"]["city_score"],
-        "luxury": car["ai"]["luxury_score"],
-        "offroad": car["ai"]["offroad_score"],
-        "safety": car["ai"]["safety_score"],
-        "efficiency": car["ai"]["efficiency_score"]
-    }
+    price_fit = max(0, 1 - (min_price / user_budget))
 
-    relevant_score = feature_map[user_priority]
+    seat_fit = 1 if car["seating_capacity"] >= user_seats else 0
 
-    chosen = 0
+    scores = car["ai"]
 
-    if (
-        min_price <= user_budget
-        and car["seating_capacity"] >= user_seats
-        and relevant_score >= 7
-    ):
-        chosen = 1
+    final_score = 0
+
+
+    if user_priority == "family":
+        final_score = (
+            0.35 * scores["family_score"] +
+            0.30 * scores["safety_score"] +
+            0.20 * seat_fit * 10 +
+            0.15 * price_fit * 10
+        )
+
+    elif user_priority == "performance":
+        final_score = (
+            0.60 * scores["performance_score"] +
+            0.20 * scores["safety_score"] +
+            0.20 * price_fit * 10
+        )
+
+    elif user_priority == "city":
+        final_score = (
+            0.50 * scores["city_score"] +
+            0.30 * scores["efficiency_score"] +
+            0.20 * price_fit * 10
+        )
+
+    elif user_priority == "luxury":
+        final_score = (
+            0.60 * scores["luxury_score"] +
+            0.20 * scores["performance_score"] +
+            0.20 * scores["safety_score"]
+        )
+
+    elif user_priority == "offroad":
+        final_score = (
+            0.50 * scores["offroad_score"] +
+            0.30 * scores["performance_score"] +
+            0.20 * scores["safety_score"]
+        )
+
+    elif user_priority == "safety":
+        final_score = (
+            0.70 * scores["safety_score"] +
+            0.20 * scores["family_score"] +
+            0.10 * price_fit * 10
+        )
+
+    elif user_priority == "efficiency":
+        final_score = (
+            0.60 * scores["efficiency_score"] +
+            0.30 * scores["city_score"] +
+            0.10 * price_fit * 10
+        )
+
+
+    chosen = 1 if final_score >= 6.5 else 0
+
 
     training_rows.append({
         "budget": user_budget,
@@ -63,13 +107,13 @@ for _ in range(5000):
         "body_type": car["body_type"],
         "priority": user_priority,
         "car_price": min_price,
-        "family_score": car["ai"]["family_score"],
-        "performance_score": car["ai"]["performance_score"],
-        "city_score": car["ai"]["city_score"],
-        "luxury_score": car["ai"]["luxury_score"],
-        "offroad_score": car["ai"]["offroad_score"],
-        "safety_score": car["ai"]["safety_score"],
-        "efficiency_score": car["ai"]["efficiency_score"],
+        "family_score": scores["family_score"],
+        "performance_score": scores["performance_score"],
+        "city_score": scores["city_score"],
+        "luxury_score": scores["luxury_score"],
+        "offroad_score": scores["offroad_score"],
+        "safety_score": scores["safety_score"],
+        "efficiency_score": scores["efficiency_score"],
         "chosen": chosen
     })
 
@@ -83,4 +127,4 @@ with open(OUTPUT_FILE, "w", newline="", encoding="utf-8") as file:
     writer.writerows(training_rows)
 
 
-print("Training data generated.")
+print("Improved training data generated.")
